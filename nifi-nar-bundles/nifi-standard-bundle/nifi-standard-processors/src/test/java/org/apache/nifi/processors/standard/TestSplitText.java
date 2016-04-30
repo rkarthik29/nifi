@@ -37,7 +37,7 @@ public class TestSplitText {
     final Path file = dataPath.resolve(originalFilename);
     final static String TEST_INPUT_DATA = "HeaderLine1\nLine2SpacesAtEnd  \nLine3\nLine4\n\n\nLine8\nLine9\n\n\n13\n14\n15    EndofLine15\n16\n"
             + "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nLastLine\n";
-
+    final static String TEST_SPLIT_DATA="test data \n has newline\r\nmay have it \n more than once\r\n";
     @Test
     public void testRoutesToFailureIfHeaderLinesNotAllPresent() throws IOException {
         final TestRunner runner = TestRunners.newTestRunner(new SplitText());
@@ -65,7 +65,7 @@ public class TestSplitText {
         final TestRunner runner = TestRunners.newTestRunner(new SplitText());
         runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
         runner.setProperty(SplitText.LINE_SPLIT_COUNT, "3");
-
+        runner.setProperty(SplitText.LINE_END_CHAR, "LF");
         runner.enqueue(file);
         runner.run();
 
@@ -84,6 +84,47 @@ public class TestSplitText {
         splits.get(1).assertContentEquals(expected1);
         splits.get(2).assertContentEquals(expected2);
         splits.get(3).assertContentEquals(expected3);
+    }
+    
+    @Test
+    public void testNewLineinSplitData() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "CRLF");
+
+        runner.enqueue(TEST_SPLIT_DATA);
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 2);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("test data \n has newline");
+        splits.get(1).assertContentEquals("may have it \n more than once");
+
+    }
+    
+    @Test
+    public void testNewLineinHeaderAndSplitData() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "CRLF");
+        
+        runner.enqueue("New lines may\r be in header\r\ntest data \n has newline\r\nmay have it \n more than once\r\n");
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 3);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("New lines may\r be in header");
+        splits.get(1).assertContentEquals("test data \n has newline");
+        splits.get(2).assertContentEquals("may have it \n more than once");
+
     }
 
     @Test
@@ -339,6 +380,7 @@ public class TestSplitText {
         splitRunner.setProperty(SplitText.HEADER_LINE_COUNT, "2");
         splitRunner.setProperty(SplitText.LINE_SPLIT_COUNT, "3");
         splitRunner.setProperty(SplitText.REMOVE_TRAILING_NEWLINES, "true");
+        splitRunner.setProperty(SplitText.LINE_END_CHAR, "LF");
 
         splitRunner.enqueue("H1\nH2\n1\n2\n3\n\n\n\n\n\n\n10\n11\n12\n");
 
@@ -357,6 +399,7 @@ public class TestSplitText {
         splitRunner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
         splitRunner.setProperty(SplitText.LINE_SPLIT_COUNT, "3");
         splitRunner.setProperty(SplitText.REMOVE_TRAILING_NEWLINES, "true");
+        splitRunner.setProperty(SplitText.LINE_END_CHAR, "LF");
 
         splitRunner.enqueue("1\n2\n3\n\n\n\n\n\n\n10\n11\n12\n");
 

@@ -14,3 +14,5 @@ nb-configuration.xml
 *.iws
 *~
 
+
+lifecycle-mapping-metadata.xml
