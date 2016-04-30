@@ -107,6 +107,84 @@ public class TestSplitText {
     }
     
     @Test
+    public void testCRinSplitData() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "CRLF");
+
+        runner.enqueue("test data \r has CR\r\nmay have it \r more than once\r\n");
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 2);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("test data \r has CR");
+        splits.get(1).assertContentEquals("may have it \r more than once");
+
+    }
+    
+    @Test
+    public void testCRinSplitDataWithLFAtEnd() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "LF");
+
+        runner.enqueue("test data \r has CR\nmay have it \r more than once\n");
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 2);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("test data \r has CR");
+        splits.get(1).assertContentEquals("may have it \r more than once");
+
+    }
+    
+    @Test
+    public void testLFinSplitDataWithCRAtEnd() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "CR");
+
+        runner.enqueue("test data \n has CR\rmay have it \n more than once\r");
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 2);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("test data \n has CR");
+        splits.get(1).assertContentEquals("may have it \n more than once");
+
+    }
+    
+    @Test
+    public void testCRinSplitDataWithNOCRorLFAtEnd() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new SplitText());
+        runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
+        runner.setProperty(SplitText.LINE_SPLIT_COUNT, "1");
+        runner.setProperty(SplitText.LINE_END_CHAR, "CRLF");
+
+        runner.enqueue("test data \r has CR\nmay have it \r more than once\n");
+        runner.run();
+
+        runner.assertTransferCount(SplitText.REL_FAILURE, 0);
+        runner.assertTransferCount(SplitText.REL_ORIGINAL, 1);
+        runner.assertTransferCount(SplitText.REL_SPLITS, 1);
+
+        final List<MockFlowFile> splits = runner.getFlowFilesForRelationship(SplitText.REL_SPLITS);
+        splits.get(0).assertContentEquals("test data \r has CR\nmay have it \r more than once\n");
+    }
+    
+    @Test
     public void testNewLineinHeaderAndSplitData() throws IOException {
         final TestRunner runner = TestRunners.newTestRunner(new SplitText());
         runner.setProperty(SplitText.HEADER_LINE_COUNT, "0");
