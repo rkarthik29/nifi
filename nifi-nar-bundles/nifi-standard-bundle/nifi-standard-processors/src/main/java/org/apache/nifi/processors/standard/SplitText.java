@@ -65,6 +65,7 @@ import org.apache.nifi.stream.io.ByteCountingInputStream;
 import org.apache.nifi.stream.io.ByteCountingOutputStream;
 import org.apache.nifi.util.IntegerHolder;
 import org.apache.nifi.util.LongHolder;
+import org.apache.nifi.util.NaiveSearchRingBuffer;
 import org.apache.nifi.util.ObjectHolder;
 
 @EventDriven
@@ -136,6 +137,13 @@ public class SplitText extends AbstractProcessor {
             .allowableValues("true", "false")
             .defaultValue("true")
             .build();
+    public static final PropertyDescriptor LINE_END_CHAR = new PropertyDescriptor.Builder()
+            .name("End Of Line Character")
+            .description("The newline character that identifies an end of line")
+            .required(true)
+            .allowableValues("LF","CR","CRLF")
+            .defaultValue("LF")
+            .build();
 
     public static final Relationship REL_ORIGINAL = new Relationship.Builder()
             .name("original")
@@ -161,6 +169,7 @@ public class SplitText extends AbstractProcessor {
         properties.add(HEADER_LINE_COUNT);
         properties.add(HEADER_MARKER);
         properties.add(REMOVE_TRAILING_NEWLINES);
+        properties.add(LINE_END_CHAR);
         this.properties = Collections.unmodifiableList(properties);
 
         final Set<Relationship> relationships = new HashSet<>();
@@ -197,14 +206,14 @@ public class SplitText extends AbstractProcessor {
     }
 
     private int readLines(final InputStream in, final int maxNumLines, final long maxByteCount, final OutputStream out,
-                          final boolean includeLineDelimiter, final byte[] leadingNewLineBytes) throws IOException {
+                          final boolean includeLineDelimiter, final byte[] leadingNewLineBytes,final String endOfLine) throws IOException {
         final EndOfLineBuffer eolBuffer = new EndOfLineBuffer();
 
         byte[] leadingBytes = leadingNewLineBytes;
         int numLines = 0;
         long totalBytes = 0L;
         for (int i = 0; i < maxNumLines; i++) {
-            final EndOfLineMarker eolMarker = countBytesToSplitPoint(in, out, totalBytes, maxByteCount, includeLineDelimiter, eolBuffer, leadingBytes);
+            final EndOfLineMarker eolMarker = countBytesToSplitPoint(in, out, totalBytes, maxByteCount, includeLineDelimiter, eolBuffer, leadingBytes,endOfLine);
             final long bytes = eolMarker.getBytesConsumed();
             leadingBytes = eolMarker.getLeadingNewLineBytes();
 
@@ -228,7 +237,8 @@ public class SplitText extends AbstractProcessor {
     }
 
     private EndOfLineMarker countBytesToSplitPoint(final InputStream in, final OutputStream out, final long bytesReadSoFar, final long maxSize,
-                                                   final boolean includeLineDelimiter, final EndOfLineBuffer eolBuffer, final byte[] leadingNewLineBytes) throws IOException {
+                                                   final boolean includeLineDelimiter, final EndOfLineBuffer eolBuffer, final byte[] leadingNewLineBytes,
+                                                   final String endOfLine) throws IOException {
         long bytesRead = 0L;
         final ByteArrayOutputStream buffer;
         if (out != null) {
@@ -237,6 +247,7 @@ public class SplitText extends AbstractProcessor {
             buffer = null;
         }
         byte[] bytesToWriteFirst = leadingNewLineBytes;
+        final NaiveSearchRingBuffer nrbuffer = new NaiveSearchRingBuffer(getBytes(endOfLine));
 
         in.mark(Integer.MAX_VALUE);
         while (true) {
@@ -262,8 +273,20 @@ public class SplitText extends AbstractProcessor {
                 bytesToWriteFirst = null;
             }
             // buffer the output
+            boolean isNewLineChar =nrbuffer.addAndCompare((byte)nextByte);
+
+            if(nextByte=='\r' && "CRLF".equals(endOfLine) && !isNewLineChar){
+            	in.mark(1);
+            	int byteAhead=in.read();
+            	if(byteAhead=='\n'){
+            		bytesRead++;
+            		isNewLineChar=true;
+            	}else{
+            		in.reset();
+            	}
+            }
             bytesRead++;
-            if (buffer != null && nextByte != '\n' && nextByte != '\r') {
+            if (buffer != null && !isNewLineChar) {
                 if (bytesToWriteFirst != null) {
                     buffer.write(bytesToWriteFirst);
                 }
@@ -283,77 +306,62 @@ public class SplitText extends AbstractProcessor {
             }
 
             // if we have a new line, then we're done
-            if (nextByte == '\n') {
+            if (isNewLineChar) {
                 if (buffer != null) {
                     buffer.writeTo(out);
                     buffer.close();
-                    eolBuffer.addEndOfLine(false, true);
+                    eolBuffer.addEndOfLine(endOfLine);
                 }
                 return new EndOfLineMarker(bytesRead, eolBuffer, false, bytesToWriteFirst);
-            }
-
-            // Determine if \n follows \r; in either case, end of line has been reached
-            if (nextByte == '\r') {
-                if (buffer != null) {
-                    buffer.writeTo(out);
-                    buffer.close();
-                }
-                in.mark(1);
-                final int lookAheadByte = in.read();
-                if (lookAheadByte == '\n') {
-                    eolBuffer.addEndOfLine(true, true);
-                    return new EndOfLineMarker(bytesRead + 1, eolBuffer, false, bytesToWriteFirst);
-                } else {
-                    in.reset();
-                    eolBuffer.addEndOfLine(true, false);
-                    return new EndOfLineMarker(bytesRead, eolBuffer, false, bytesToWriteFirst);
-                }
             }
         }
     }
 
     private SplitInfo locateSplitPoint(final InputStream in, final int numLines, final boolean keepAllNewLines, final long maxSize,
-                                       final long bufferedBytes) throws IOException {
+                                       final long bufferedBytes,final String endOfLine) throws IOException {
         final SplitInfo info = new SplitInfo();
         final EndOfLineBuffer eolBuffer = new EndOfLineBuffer();
         int lastByte = -1;
         info.lengthBytes = bufferedBytes;
         long lastEolBufferLength = 0L;
+        final NaiveSearchRingBuffer nrbuffer = new NaiveSearchRingBuffer(getBytes(endOfLine));
 
         while ((info.lengthLines < numLines || (info.lengthLines == numLines && lastByte == '\r'))
                 && (((info.lengthBytes + eolBuffer.length()) < maxSize) || info.lengthLines == 0)
                 && eolBuffer.length() < maxSize) {
-            in.mark(1);
-            final int nextByte = in.read();
+
+        	final int nextByte = in.read();
             // Check for \n following \r on last line
-            if (info.lengthLines == numLines && lastByte == '\r' && nextByte != '\n') {
+            /*if (info.lengthLines == numLines && lastByte == '\r' && nextByte != '\n') {
                 in.reset();
                 break;
+            }*/
+
+            boolean isNewLineChar =nrbuffer.addAndCompare((byte)nextByte);
+
+            if(nextByte=='\r' && "CRLF".equals(endOfLine) && !isNewLineChar){
+            	in.mark(1);
+            	int byteAhead=in.read();
+            	if(byteAhead=='\n'){
+            		isNewLineChar=true;
+            	}else{
+            		in.reset();
+            	}
             }
-            switch (nextByte) {
-                case -1:
+
+            if(nextByte==-1){
                     info.endOfStream = true;
                     if (keepAllNewLines) {
                         info.lengthBytes += eolBuffer.length();
                     }
-                    if (lastByte != '\r') {
-                        info.lengthLines++;
-                    }
-                    info.bufferedBytes = 0;
-                    return info;
-                case '\r':
-                    eolBuffer.addEndOfLine(true, false);
                     info.lengthLines++;
                     info.bufferedBytes = 0;
-                    break;
-                case '\n':
-                    eolBuffer.addEndOfLine(false, true);
-                    if (lastByte != '\r') {
-                        info.lengthLines++;
-                    }
+                    return info;
+            }else if(isNewLineChar){
+                    eolBuffer.addEndOfLine(endOfLine);
+                    info.lengthLines++;
                     info.bufferedBytes = 0;
-                    break;
-                default:
+            }else{
                     if (eolBuffer.length() > 0) {
                         info.lengthBytes += eolBuffer.length();
                         lastEolBufferLength = eolBuffer.length();
@@ -361,9 +369,8 @@ public class SplitText extends AbstractProcessor {
                     }
                     info.lengthBytes++;
                     info.bufferedBytes++;
-                    break;
             }
-            lastByte = nextByte;
+
         }
         // if current line exceeds size and not keeping eol characters, remove previously applied eol characters
         if ((info.lengthBytes + eolBuffer.length()) >= maxSize && !keepAllNewLines) {
@@ -411,7 +418,7 @@ public class SplitText extends AbstractProcessor {
                 ? context.getProperty(FRAGMENT_MAX_SIZE).asDataSize(DataUnit.B).longValue() : Long.MAX_VALUE;
         final String headerMarker = context.getProperty(HEADER_MARKER).getValue();
         final boolean includeLineDelimiter = !context.getProperty(REMOVE_TRAILING_NEWLINES).asBoolean();
-
+        final String endOfLine = context.getProperty(LINE_END_CHAR).getValue();
         final ObjectHolder<String> errorMessage = new ObjectHolder<>(null);
         final ArrayList<SplitInfo> splitInfos = new ArrayList<>();
 
@@ -440,7 +447,7 @@ public class SplitText extends AbstractProcessor {
                     final byte[] headerNewLineBytes;
                     final byte[] headerBytesWithoutTrailingNewLines;
                     if (headerInfoLineCount > 0) {
-                        final int headerLinesCopied = readLines(in, headerInfoLineCount, Long.MAX_VALUE, headerStream, true, null);
+                        final int headerLinesCopied = readLines(in, headerInfoLineCount, Long.MAX_VALUE, headerStream, true, null,endOfLine);
 
                         if (headerLinesCopied < headerInfoLineCount) {
                             errorMessage.set("Header Line Count is set to " + headerInfoLineCount + " but file had only " + headerLinesCopied + " lines");
@@ -448,13 +455,17 @@ public class SplitText extends AbstractProcessor {
                         }
 
                         // Break header apart into trailing newlines and remaining text
+                        final NaiveSearchRingBuffer buffer = new NaiveSearchRingBuffer(getBytes(endOfLine));
                         final byte[] headerBytes = headerStream.toByteArray();
                         int headerNewLineByteCount = 0;
                         for (int i = headerBytes.length - 1; i >= 0; i--) {
                             final byte headerByte = headerBytes[i];
-
-                            if (headerByte == '\r' || headerByte == '\n') {
-                                headerNewLineByteCount++;
+                            if(headerByte=='\n' && "CRLF".equals(endOfLine)){
+                            	buffer.addAndCompare(headerBytes[i-1]);
+                            	i--;
+                            }
+                            if (buffer.addAndCompare(headerByte)) {
+                                headerNewLineByteCount+=getBytes(endOfLine).length;
                             } else {
                                 break;
                             }
@@ -491,7 +502,7 @@ public class SplitText extends AbstractProcessor {
                                             countingOut.write(headerBytesWithoutTrailingNewLines);
                                             //readLines has an offset of countingOut.getBytesWritten() to allow for header bytes written already
                                             linesCopied.set(readLines(in, maxLineCount, maxFragmentSize - countingOut.getBytesWritten(), countingOut,
-                                                    includeLineDelimiter, headerNewLineBytes));
+                                                    includeLineDelimiter, headerNewLineBytes,endOfLine));
                                             bytesCopied.set(countingOut.getBytesWritten());
                                         }
                                     }
@@ -520,7 +531,7 @@ public class SplitText extends AbstractProcessor {
                             // We have no header lines, so we can simply demarcate the original File via the
                             // ProcessSession#clone method.
                             long beforeReadingLines = in.getBytesConsumed() - bufferedPartialLine;
-                            final SplitInfo info = locateSplitPoint(in, maxLineCount, includeLineDelimiter, maxFragmentSize, bufferedPartialLine);
+                            final SplitInfo info = locateSplitPoint(in, maxLineCount, includeLineDelimiter, maxFragmentSize, bufferedPartialLine,endOfLine);
                             if (context.getProperty(FRAGMENT_MAX_SIZE).isSet()) {
                                 bufferedPartialLine = info.bufferedBytes;
                             }
@@ -584,6 +595,22 @@ public class SplitText extends AbstractProcessor {
         session.transfer(splits, REL_SPLITS);
     }
 
+    private byte[] getBytes(final String endOfLine){
+    	if("CRLF".equals(endOfLine)){
+    		byte[] bytes={'\r','\n'};
+    		return bytes;
+    	}else if("CR".equals(endOfLine)){
+    		byte[] bytes={'\r'};
+    		return bytes;
+    	}else if("LF".equals(endOfLine)){
+    		byte[] bytes={'\n'};
+    		return bytes;
+    	}else{
+    		byte[] bytes={'\n'};
+    		return bytes;
+    	}
+    }
+
     private void finishFragmentAttributes(final ProcessSession session, final FlowFile source, final List<FlowFile> splits) {
         final String originalFilename = source.getAttribute(CoreAttributes.FILENAME.key());
 
@@ -625,13 +652,35 @@ public class SplitText extends AbstractProcessor {
 
         private final BitSet buffer = new BitSet();
         private int index = 0;
-
+        private int length=0;
         public void clear() {
             index = 0;
+            buffer.clear();
+            length=0;
+        }
+
+        public void addEndOfLine(final String endOfLine) {
+        	if("CRLF".equals(endOfLine)){
+	            buffer.set(index++, true);
+	            buffer.set(index++, true);
+	            length+=2;
+        	}else if("LF".equals(endOfLine)){
+	            buffer.set(index++, false);
+	            buffer.set(index++, true);
+	            length++;
+        	}else if("CR".equals(endOfLine)){
+	            buffer.set(index++, true);
+	            buffer.set(index++, false);
+	            length++;
+        	}
         }
 
         public void addEndOfLine(final boolean carriageReturn, final boolean newLine) {
             buffer.set(index++, carriageReturn);
+            if(carriageReturn)
+            	length++;
+            if(newLine)
+            	length++;
             buffer.set(index++, newLine);
         }
 
@@ -661,7 +710,7 @@ public class SplitText extends AbstractProcessor {
          * @return the number of line endings in the buffer
          */
         public int length() {
-            return index / 2;
+            return length;
         }
     }
 
